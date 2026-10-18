@@ -1,0 +1,9 @@
+{
+  "name": "@stargazer/web",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "scripts": { "dev": "vite", "build": "vite build", "preview": "vite preview" },
+  "dependencies": { "@stargazer/shared": "*", "react": "^19", "react-dom": "^19", "three": "^0.180", "zustand": "^5" },
+  "devDependencies": { "@types/react": "^19", "@types/react-dom": "^19", "@types/three": "^0.180", "@vitejs/plugin-react": "^5", "vite": "^7" }
+}
