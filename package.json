@@ -2,15 +2,22 @@
   "name": "stargazer",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/shared", "packages/simulator", "packages/server", "packages/web"],
+  "workspaces": [
+    "packages/shared",
+    "packages/simulator",
+    "packages/server",
+    "packages/web"
+  ],
   "scripts": {
+    "setup": "npm install && npm run fetch-data",
     "dev": "concurrently -n sim,server,web \"npm run dev -w @stargazer/simulator\" \"npm run dev -w @stargazer/server\" \"npm run dev -w @stargazer/web\"",
     "build": "npm run build -w @stargazer/web",
     "start": "npm run start -w @stargazer/server",
-    "sim": "npm run start -w @stargazer/simulator",
+    "sim": "npm run start -w @stargazer/simulator --",
     "fetch-data": "node scripts/fetch-data.mjs",
     "test": "vitest run",
-    "typecheck": "tsc -p packages/shared && tsc -p packages/simulator && tsc -p packages/server && tsc -p packages/web"
+    "typecheck": "tsc -p packages/shared && tsc -p packages/simulator && tsc -p packages/server && tsc -p packages/web && tsc -p scripts",
+    "e2e": "tsx scripts/e2e.ts"
   },
   "devDependencies": {
     "@types/node": "^22",

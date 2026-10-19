@@ -68,13 +68,61 @@ export interface MountState {
   location: GeoLocation | null;
   serverTime: number;
   simulator: boolean; // true when connected to the local simulator
+  /** Optional safety/telemetry details (SAFETY.md §5). Absent from older servers. */
+  health?: MountHealth;
+  /** Safety limits from the server config, so the GUI can explain refusals before they happen. */
+  limits?: MountLimits;
 }
+
+export interface MountLimits {
+  /** Mechanical altitude limits (deg above level). GoTo targets outside are refused, even with force. */
+  altDeg: [number, number];
+  /** GoTo targets closer than this to the Sun are refused (deg). */
+  sunDeg: number;
+  /** "Sun is up" threshold (deg). While above it, GoTo/tracking need quality 'aligned'. */
+  sunUpAltDeg: number;
+  /** Cable wrap soft / hard limits on the unwrapped azimuth (deg from cable-neutral). */
+  azSoftDeg: number;
+  azHardDeg: number;
+  /** Solar-filter mode: Sun-proximity refusals become confirmations. */
+  solarFilterMode: boolean;
+  /** The server waits this long after motion before capturing an alignment point (ms). */
+  settleMs: number;
+}
+
+export interface MountHealth {
+  /** null = no battery device (expected on Astro Fi); undefined = not probed yet. */
+  battery?: { volts: number; level: string; charging: boolean } | null;
+  /** Median AUX round-trip time (ms). */
+  latencyMs: number;
+  /** AUX request timeouts this session. */
+  timeouts: number;
+  /** Peak GOTO_FAST speed / expected cruise speed for the last long slew (power-health proxy). */
+  slewSpeedRatio?: number;
+  /** Human-readable warnings and latched faults (faults are prefixed "FAULT:"; a `stop` acknowledges them). */
+  warnings: string[];
+  /** Unwrapped azimuth from cable-neutral (deg); cable-wrap limits apply to this. */
+  unwrappedAz?: number;
+  /** Latched fault (stall, runaway, limit, ...). Motion is refused until a `stop` acknowledges it. */
+  fault?: string;
+  /** The last stop could not be verified: the mount may still be moving. The user must cut the power. */
+  stopFailed?: boolean;
+  /** A hand controller is attached: Stargazer is read-only. */
+  observer?: boolean;
+}
+
+/** Message of the `error` the server sends when a stop fails (also flagged by `health.stopFailed`). */
+export const STOP_FAILED_MESSAGE = 'STOP FAILED: UNPLUG THE TELESCOPE POWER NOW';
 
 // ---------- client -> server ----------
 export type ClientMessage =
   | { type: 'connect'; host?: string; port?: number } // defaults 1.2.3.4:2000, or env TELESCOPE_HOST/PORT
   | { type: 'disconnect' }
-  /** Press-and-hold manual move. rate 1..9. Send rate 0 (or 'stop') on release. Stops tracking for that axis while moving. */
+  /**
+   * Press-and-hold manual move. rate 1..9. Stops tracking for that axis while moving.
+   * Dead-man: while held, re-send the same message every ~200 ms as a heartbeat; the server stops the axis
+   * if no heartbeat arrives within 600 ms (and on WS close). Send stopAxis (or rate 0) on release.
+   */
   | { type: 'move'; axis: Axis; direction: 1 | -1; rate: number }
   | { type: 'stopAxis'; axis: Axis }
   | { type: 'stop' } // abort everything: goto, manual, tracking

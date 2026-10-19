@@ -1,5 +1,9 @@
 node_modules
 dist
+.dev
+e2e-output
 data/raw
 *.log
 .DS_Store
+# Catalog data is generated locally (npm run fetch-data); third-party licenses, see data/SOURCES.md
+data/*.json
