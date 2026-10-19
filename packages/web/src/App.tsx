@@ -1,34 +1,33 @@
-import { useEffect } from 'react';
-import { useStore } from './state/store.ts';
+// App shell: boots the store (server link, catalog, location), then shows the desktop sky map or the phone
+// remote (lib/layout.ts). The desktop layout is lazy-loaded: phones never download three.js.
+import { lazy, Suspense, useEffect } from 'react';
+import { useStore, REMOTE_TABS, type PanelTab, type RemoteTab } from './state/store.ts';
 import { startSlewController } from './state/slewController.ts';
 import { loadCatalog } from './lib/catalog.ts';
 import { extraDsoRecords } from './lib/astroAdapter.ts';
 import { cachedToLocation, readCachedGeo } from './lib/location.ts';
-import { SkyView, centerOn } from './sky/SkyView.tsx';
+import { activeSky, centerOn } from './sky/viewControl.ts';
 import { search } from './lib/search.ts';
-import { TopBar, TABS } from './panels/TopBar.tsx';
-import { StatusPanel } from './panels/StatusPanel.tsx';
-import { TonightPanel } from './panels/TonightPanel.tsx';
-import { AlignPanel } from './panels/AlignPanel.tsx';
-import { LocationPanel, requestGeolocation } from './panels/LocationPanel.tsx';
-import { InfoCard } from './panels/InfoCard.tsx';
-import { SlewPad, StopButton } from './panels/SlewPad.tsx';
-import { Banners, LogDrawer, Modals, Toasts } from './panels/Overlays.tsx';
-import { Icon } from './panels/ui.tsx';
+import { requestGeolocation } from './panels/LocationPanel.tsx';
+import { RemoteApp } from './remote/RemoteApp.tsx';
+
+const DesktopApp = lazy(() => import('./DesktopApp.tsx'));
 
 let booted = false;
 function useBootstrap() {
   useEffect(() => {
     if (booted) return;
     booted = true;
-    const mock = new URLSearchParams(window.location.search).has('mock');
+    const params = new URLSearchParams(window.location.search);
+    const mock = params.has('mock');
     const st = useStore.getState();
     st.start(mock);
-    // ?mock&demo: auto-connect the fake mount and set Home (for demos / screenshots)
-    const params = new URLSearchParams(window.location.search);
     const panel = params.get('panel');
-    if (panel && ['status', 'tonight', 'align', 'location'].includes(panel)) st.setPanel(panel as 'status');
+    if (panel && ['status', 'tonight', 'list', 'align', 'location'].includes(panel)) st.setPanel(panel as PanelTab);
+    const tab = params.get('tab');
+    if (tab && (REMOTE_TABS as string[]).includes(tab)) st.setRemoteTab(tab as RemoteTab);
     if (params.has('night')) st.setNight(true);
+    // ?mock&demo: auto-connect the fake mount and set Home (for demos / screenshots)
     if (mock && params.has('demo')) {
       setTimeout(() => {
         const s = useStore.getState();
@@ -41,9 +40,14 @@ function useBootstrap() {
     loadCatalog({ extraDsos: extraDsoRecords })
       .then((c) => {
         useStore.getState().setCatalog(c);
-        const sel = new URLSearchParams(window.location.search).get('select');
+        const sel = params.get('select');
         const idx = useStore.getState().searchIndex;
-        if (sel && idx) { const hit = search(idx, sel, 1)[0]; if (hit) setTimeout(() => centerOn(hit), 200); }
+        const hit = sel && idx ? search(idx, sel, 1)[0] : undefined;
+        if (!hit) return;
+        // the (lazy) sky map may not be up yet: wait a little for it, then centre (or just select on the remote)
+        let tries = 0;
+        const go = () => { if (activeSky() || useStore.getState().layout === 'remote' || ++tries > 40) centerOn(hit); else setTimeout(go, 150); };
+        setTimeout(go, 200);
       })
       .catch((e) => { console.error(e); useStore.setState({ catalogError: String(e) }); });
   }, []);
@@ -64,58 +68,20 @@ function useBootstrap() {
     });
   }, [haveState]);
 
-  // Night mode on <html> for CSS
+  // Night mode and layout on <html> for CSS
   const night = useStore((s) => s.night);
   useEffect(() => { document.documentElement.classList.toggle('night', night); }, [night]);
-}
-
-function SidePanel() {
-  const panel = useStore((s) => s.panel);
-  const setPanel = useStore((s) => s.setPanel);
-  const quality = useStore((s) => s.mount?.alignment.quality);
-  return (
-    <aside className={`side ${panel ? 'open' : 'closed'}`}>
-      <nav className="tabs glass">
-        {TABS.map((t) => (
-          <button key={t.id} className={`tab ${panel === t.id ? 'on' : ''}`} onClick={() => setPanel(panel === t.id ? null : t.id)} title={t.label}>
-            <Icon name={t.icon} size={18} />
-            <span>{t.label}</span>
-            {t.id === 'align' && quality && quality !== 'aligned' && <i className={`dot dot-${quality === 'none' ? 'bad' : 'warn'}`} />}
-          </button>
-        ))}
-      </nav>
-      {panel && (
-        <div className="panel glass">
-          <button className="panel-close icon-btn" onClick={() => setPanel(null)} aria-label="Collapse panel"><Icon name="chevronL" /></button>
-          {panel === 'status' && <StatusPanel />}
-          {panel === 'tonight' && <TonightPanel />}
-          {panel === 'align' && <AlignPanel />}
-          {panel === 'location' && <LocationPanel />}
-        </div>
-      )}
-    </aside>
-  );
+  const layout = useStore((s) => s.layout);
+  useEffect(() => { document.documentElement.classList.toggle('remote', layout === 'remote'); }, [layout]);
 }
 
 export function App() {
   useBootstrap();
-  const catalog = useStore((s) => s.catalog);
-  const err = useStore((s) => s.catalogError);
+  const layout = useStore((s) => s.layout);
+  if (layout === 'remote') return <RemoteApp />;
   return (
-    <div className="app">
-      <SkyView />
-      {!catalog && <div className="loading glass">{err ? `Failed to load catalog: ${err}` : 'Loading star catalog…'}</div>}
-      <TopBar />
-      <SidePanel />
-      <Banners />
-      <InfoCard />
-      <div className="bottom-right">
-        <StopButton />
-        <SlewPad />
-      </div>
-      <LogDrawer />
-      <Toasts />
-      <Modals />
-    </div>
+    <Suspense fallback={<div className="loading glass">Loading sky map…</div>}>
+      <DesktopApp />
+    </Suspense>
   );
 }

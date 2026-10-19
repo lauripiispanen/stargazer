@@ -1,7 +1,7 @@
-// Persisted server state (~/.stargazer/state.json): location, alignment, last encoder snapshot.
+// Persisted server state (~/.stargazer/state.json): location, alignment, last encoder snapshot, observing list.
 import fs from 'node:fs';
 import path from 'node:path';
-import type { GeoLocation } from '@stargazer/shared/api.ts';
+import type { GeoLocation, ObservingListEntry } from '@stargazer/shared/api.ts';
 import type { AlignmentSnapshot } from './alignment.ts';
 
 export interface PersistedState {
@@ -14,6 +14,8 @@ export interface PersistedState {
   encoderTime: number | null;
   /** Unwrapped azimuth (cable-wrap frame) at encoderTime. */
   unwrappedAz?: number | null;
+  /** Shared observing list (absent in files written before it existed). */
+  observingList?: ObservingListEntry[];
 }
 
 export type PersistedData = Omit<PersistedState, 'version' | 'savedAt'>;

@@ -1,7 +1,8 @@
 // In-browser fake mount for `?mock` demos (no server needed). Speaks the same ServerMessage protocol.
 // Physics are simplified: the tube's true sky direction = encoder + a hidden constant offset; the
 // "model" is IA/IE only (constant offsets), refined from alignment points with a bit of centring noise.
-import type { AlignmentPoint, AlignmentState, ClientMessage, GeoLocation, MountState, ServerMessage, Target, Axis } from '@stargazer/shared/api.ts';
+import type { AlignmentPoint, AlignmentState, ClientMessage, GeoLocation, MountState, ObservingListEntry, ServerMessage, Target, Axis } from '@stargazer/shared/api.ts';
+import { applyListMessage, isListMessage, sanitizeList } from '@stargazer/shared/observingList.ts';
 import { DEFAULT_TELESCOPE_HOST, DEFAULT_TELESCOPE_PORT } from '@stargazer/shared/api.ts';
 import { altAzToRaDec, raDecToAltAz, separationAltAz, sunAltitude, targetAltAz } from '../lib/astroAdapter.ts';
 import { DEFAULT_LIMITS, sunIsUp } from '../lib/safety.ts';
@@ -28,6 +29,7 @@ export class MockMount {
   private unwrapped = 0;
   private prevAz: number | null = null;
   private timeouts = 0;
+  private list: ObservingListEntry[] = [];
 
   constructor(emit: (m: ServerMessage) => void) {
     this.emit = emit;
@@ -37,10 +39,12 @@ export class MockMount {
       connection: 'disconnected', host: DEFAULT_TELESCOPE_HOST, port: DEFAULT_TELESCOPE_PORT, encoder: null, pointing: null,
       slew: 'idle', target: null, tracking: false,
       alignment: { quality: 'none', points: [], params: null, rmsArcmin: null, solved: [] },
-      location: loc, serverTime: Date.now(), simulator: true, limits: DEFAULT_LIMITS,
+      location: loc, serverTime: Date.now(), simulator: true, limits: DEFAULT_LIMITS, clients: 1,
     };
+    try { this.list = sanitizeList(JSON.parse(localStorage.getItem('stargazer.mock.list') ?? '[]')); } catch { /* none */ }
     this.timer = setInterval(() => this.tick(), 50);
     this.log('info', 'Mock mount ready (in-browser fake, no server). Press Connect.');
+    setTimeout(() => this.emit({ type: 'list', entries: this.list }), 0);
   }
 
   dispose() { clearInterval(this.timer); }
@@ -53,6 +57,15 @@ export class MockMount {
   }
 
   handle(m: ClientMessage) {
+    if (isListMessage(m)) {
+      // the observing list works without a telescope, like on the server
+      try {
+        this.list = applyListMessage(this.list, m, { now: Date.now(), newId: () => `mock-${Date.now().toString(36)}-${this.nextId++}` });
+        try { localStorage.setItem('stargazer.mock.list', JSON.stringify(this.list)); } catch { /* ignore */ }
+        this.emit({ type: 'list', entries: this.list });
+      } catch (e) { this.err((e as Error).message, m.type); }
+      return;
+    }
     const s = this.s;
     const needConn = m.type !== 'connect' && m.type !== 'setLocation' && m.type !== 'disconnect';
     if (needConn && s.connection !== 'connected') { this.err('Not connected to the telescope', m.type); return; }
@@ -92,8 +105,11 @@ export class MockMount {
       case 'alignHome': {
         const enc = s.encoder!;
         this.model = { az: (m.azDeg ?? 0) - enc.az, alt: (m.altDeg ?? 0) - enc.alt };
-        s.alignment = { quality: 'rough', points: [], params: { IA: -this.model.az, IE: -this.model.alt, AN: 0, AW: 0, CA: 0, NPAE: 0 }, rmsArcmin: null, solved: [] };
-        this.log('info', 'Home set: tube level, pointing north (rough model)'); break;
+        const source = m.source ?? 'manual';
+        const home = { source, azDeg: m.azDeg ?? 0, altDeg: m.altDeg ?? 0, time: Date.now(),
+          ...(m.uncertainty ?? {}), ...(m.magHeadingDeg != null ? { magHeadingDeg: m.magHeadingDeg } : {}), ...(m.declinationDeg != null ? { declinationDeg: m.declinationDeg } : {}) };
+        s.alignment = { quality: 'rough', points: [], params: { IA: -this.model.az, IE: -this.model.alt, AN: 0, AW: 0, CA: 0, NPAE: 0 }, rmsArcmin: null, solved: [], home };
+        this.log('info', source === 'sensors' ? `Home set from phone sensors: az ${home.azDeg.toFixed(1)}°, alt ${home.altDeg.toFixed(1)}° (rough model)` : 'Home set: tube level, pointing north (rough model)'); break;
       }
       case 'alignAddPoint': {
         if (!s.location) { this.err('Set a location first', m.type); return; }
@@ -115,7 +131,7 @@ export class MockMount {
       case 'alignRemovePoint':
         s.alignment = { ...s.alignment, points: s.alignment.points.filter((p) => p.id !== m.id) }; this.refit(); break;
       case 'alignClear':
-        this.model = null; s.alignment = { quality: 'none', points: [], params: null, rmsArcmin: null, solved: [] }; this.log('info', 'Alignment cleared'); break;
+        this.model = null; s.alignment = { quality: 'none', points: [], params: null, rmsArcmin: null, solved: [], home: null }; this.log('info', 'Alignment cleared'); break;
       case 'sync': {
         if (!s.location) { this.err('Set a location first', m.type); return; }
         const sky = targetAltAz(m.target, s.location, Date.now()); const enc = s.encoder!;

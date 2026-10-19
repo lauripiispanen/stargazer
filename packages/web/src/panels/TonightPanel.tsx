@@ -5,8 +5,9 @@ import { observingConditions, whatsUpTonight, type TonightItem, type TonightCate
 import { sunIsUp } from '../lib/safety.ts';
 import { fmtDeg, fmtTime, fmtMag } from '../lib/format.ts';
 import { DSO_TYPE_LABEL, type DsoType, type SkyObject } from '../lib/catalog.ts';
-import { centerOn } from '../sky/SkyView.tsx';
+import { centerOn } from '../sky/viewControl.ts';
 import { Section, Icon } from './ui.tsx';
+import { AddToListButton } from './ListPanel.tsx';
 
 const FILTERS: { id: string; label: string; match: (i: TonightItem) => boolean }[] = [
   { id: 'all', label: 'All', match: () => true },
@@ -39,6 +40,7 @@ export function TonightPanel() {
   const catalog = useStore((s) => s.catalog);
   const blocker = useGotoBlocker();
   const requestGoto = useStore((s) => s.requestGoto);
+  const remote = useStore((s) => s.layout === 'remote'); // phone: show the tapped object in the Control tab's sky view
   const offset = useStore((s) => s.timeOffsetMs);
   const loc = useLocation();
   const now = useNow(60000);
@@ -94,7 +96,7 @@ export function TonightPanel() {
           const o = toSkyObject(i, all);
           const block = blocker(i.target);
           return (
-            <li key={i.id} className="tonight-item" onClick={() => centerOn(o)}>
+            <li key={i.id} className="tonight-item" onClick={() => { centerOn(o); if (remote) useStore.getState().setRemoteTab('control'); }}>
               <span className="rank mono">{n + 1}</span>
               <div className="ti-main">
                 <div className="ti-name">{i.category === 'dso' && i.id !== i.name && !i.name.startsWith(i.id) ? <><b>{i.id}</b> {i.name}</> : <b>{i.name}</b>}</div>
@@ -103,8 +105,11 @@ export function TonightPanel() {
                 </div>
                 {i.description && <div className="ti-desc dim">{i.description}</div>}
               </div>
-              <span className="btn-wrap" title={block ?? 'GoTo'} onClick={(e) => e.stopPropagation()}>
-                <button className="btn small" disabled={!!block} onClick={() => requestGoto(i.target, { daytime: sunIsUp(sun.alt) })}>GoTo</button>
+              <span className="ti-actions" onClick={(e) => e.stopPropagation()}>
+                <AddToListButton target={i.target} small label={false} />
+                <span className="btn-wrap" title={block ?? 'GoTo'}>
+                  <button className="btn small ti-goto" disabled={!!block} onClick={() => requestGoto(i.target, { daytime: sunIsUp(sun.alt) })}>GoTo</button>
+                </span>
               </span>
             </li>
           );

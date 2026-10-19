@@ -13,11 +13,15 @@
     "dev": "concurrently -n sim,server,web \"npm run dev -w @stargazer/simulator\" \"npm run dev -w @stargazer/server\" \"npm run dev -w @stargazer/web\"",
     "build": "npm run build -w @stargazer/web",
     "start": "npm run start -w @stargazer/server",
+    "start:lan": "npm run start -w @stargazer/server -- --lan",
+    "start:lan:https": "npm run start -w @stargazer/server -- --lan --https",
     "sim": "npm run start -w @stargazer/simulator --",
     "fetch-data": "node scripts/fetch-data.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p packages/shared && tsc -p packages/simulator && tsc -p packages/server && tsc -p packages/web && tsc -p scripts",
-    "e2e": "tsx scripts/e2e.ts"
+    "e2e": "tsx scripts/e2e.ts",
+    "e2e:mobile": "tsx scripts/e2e-mobile.ts && E2E_NO_BUILD=1 tsx scripts/e2e-sensors.ts",
+    "e2e:sensors": "tsx scripts/e2e-sensors.ts"
   },
   "devDependencies": {
     "@types/node": "^22",

@@ -371,3 +371,48 @@ describe('Alignment and persistence', () => {
     await waitFor(() => mount.getState().connection === 'connected', 3000);
   });
 });
+
+describe('Home from phone sensors', () => {
+  it('maps the current encoders to the measured az/alt, records the source and keeps safety the same', async () => {
+    const { mount, astro } = await setup();
+    mount.setLocation(TEST_LOCATION);
+    mount.alignHome(123.4, 20, { source: 'sensors', uncertainty: { azSigmaDeg: 5.2, altSigmaDeg: 0.6 }, magHeadingDeg: 113, declinationDeg: 10.4 });
+    const s = mount.getState();
+    expect(s.alignment.quality).toBe('rough');
+    expect(s.alignment.home).toMatchObject({ source: 'sensors', azDeg: 123.4, altDeg: 20, azSigmaDeg: 5.2, altSigmaDeg: 0.6, magHeadingDeg: 113, declinationDeg: 10.4 });
+    // the encoders (0, 0 at power-on) now mean az 123.4°, alt 20°
+    const sky = astro.encoderToSky(simEnc(), s.alignment.params!);
+    expect(Math.abs(wrap180(sky.az - 123.4))).toBeLessThan(0.01);
+    expect(sky.alt).toBeCloseTo(20, 2);
+    // mechanical limits follow the measured altitude: level is 20° below the power-on position, so a target
+    // at sky alt 3° (encoder −17°) is allowed while 75° (encoder +55°, above the 70° limit) is refused
+    expect(await mount.goto({ kind: 'altaz', az: 123.4, alt: 75, name: 'High' }).catch((e: Error) => e.message)).toMatch(/mechanical/);
+    expect(s.alignment.home?.time).toBeGreaterThan(0);
+    expect(mount.getState().health?.warnings.join() ?? '').not.toMatch(/FAULT/);
+  });
+
+  it('refuses a sensor Home when the tube is too steep for the compass', async () => {
+    const { mount } = await setup();
+    expect(() => mount.alignHome(10, 80, { source: 'sensors' })).toThrow(/sensors refused/);
+    expect(mount.getState().alignment.quality).toBe('none');
+  });
+
+  it('manual Home stays the default and is labelled', async () => {
+    const { mount } = await setup();
+    mount.alignHome();
+    expect(mount.getState().alignment.home).toMatchObject({ source: 'manual', azDeg: 0, altDeg: 0 });
+    mount.alignClear();
+    expect(mount.getState().alignment.home).toBeNull();
+  });
+
+  it('persists the Home source', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sg-home-'));
+    const store = new StateStore(path.join(dir, 'state.json'));
+    const { mount } = await setup({ store });
+    mount.alignHome(200, 5, { source: 'sensors', uncertainty: { azSigmaDeg: 6, altSigmaDeg: 0.5 } });
+    await mount.dispose();
+    const saved = store.load();
+    expect(saved?.alignment?.homeInfo).toMatchObject({ source: 'sensors', azDeg: 200, altDeg: 5 });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});

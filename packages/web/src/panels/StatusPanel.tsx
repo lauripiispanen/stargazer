@@ -7,7 +7,8 @@ import { fmtLocation } from '../lib/location.ts';
 import { adapterFallbacks } from '../lib/astroAdapter.ts';
 import { mountHealth, mountLimits, wrapGauge } from '../lib/safety.ts';
 import { KV, Pill, Section, Toggle, Icon } from './ui.tsx';
-import { rendererFps, rendererCpuMs } from '../sky/SkyView.tsx';
+import { rendererFps, rendererCpuMs } from '../sky/viewControl.ts';
+import { PhoneRemoteCard } from './PhoneRemote.tsx';
 
 const PRESETS = [
   { label: 'Telescope WiFi', host: DEFAULT_TELESCOPE_HOST, port: DEFAULT_TELESCOPE_PORT },
@@ -97,14 +98,14 @@ function MountCard() {
   );
 }
 
-function HealthCard() {
+export function HealthCard({ compact }: { compact?: boolean } = {}) {
   const mount = useStore((s) => s.mount);
   const h: MountHealth | null = mountHealth(mount);
   if (!mount || mount.connection !== 'connected') return null;
   const limits = mountLimits(mount);
   const lim = limits.altDeg;
   return (
-    <Section title={<><Icon name="gauge" /> Power &amp; health</>} className="health">
+    <Section title={<><Icon name="gauge" /> Power &amp; health</>} className={`health ${compact ? 'compact' : ''}`}>
       {h?.warnings.length ? (
         <ul className="warnings">{h.warnings.map((w, i) => <li key={i}>⚠ {w}</li>)}</ul>
       ) : null}
@@ -113,6 +114,8 @@ function HealthCard() {
         <>
           {h.battery ? (
             <KV k="Battery" v={<><span className="mono">{h.battery.volts.toFixed(2)} V</span> · {h.battery.level}{h.battery.charging ? ' · charging' : ''}</>} />
+          ) : compact ? (
+            <KV k="Battery" v={<span className="dim">no readout · watch for slow slews</span>} />
           ) : (
             <div className="note dim">Battery readout not supported by this mount. Link quality is shown instead, so watch for slow or erratic slews (low voltage).</div>
           )}
@@ -124,8 +127,8 @@ function HealthCard() {
           {h.unwrappedAz != null && <WrapGauge az={h.unwrappedAz} limits={limits} />}
         </>
       )}
-      <KV k="Alt slew limits" mono v={`${lim[0]}° … ${lim[1]}°`} title="Above the upper limit the tube can hit the tripod (SAFETY.md §1)" />
-      <div className="note dim small">If the link drops, the telescope may keep moving. Keep the power plug within reach: unplugging it is the emergency stop.</div>
+      {!compact && <KV k="Alt slew limits" mono v={`${lim[0]}° … ${lim[1]}°`} title="Above the upper limit the tube can hit the tripod (SAFETY.md §1)" />}
+      <div className="note dim small">{compact ? 'If the link drops the telescope may keep moving: unplugging its power is the emergency stop.' : 'If the link drops, the telescope may keep moving. Keep the power plug within reach: unplugging it is the emergency stop.'}</div>
     </Section>
   );
 }
@@ -173,6 +176,7 @@ export function StatusPanel() {
       <ConnectionCard />
       <MountCard />
       <HealthCard />
+      <PhoneRemoteCard />
       <TimeCard />
     </div>
   );

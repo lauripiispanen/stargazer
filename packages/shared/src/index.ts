@@ -5,3 +5,6 @@ export * from './aux.ts';
 export * from './tonight.ts';
 export * from './catalog.ts';
 export * from './alignmentHelpers.ts';
+export * from './observingList.ts';
+export * from './sensors.ts';
+export * from './wmm.ts';

@@ -70,12 +70,19 @@ export function SlewPad() {
 }
 
 /** Big STOP: visible whenever a telescope is connected (and when a stop might be needed). */
+/** Should a STOP control be on screen? (telescope connected/connecting, a queued stop, or a lost link mid-motion) */
+export function useStopVisible(): boolean {
+  const conn = useStore((s) => s.mount?.connection);
+  const pending = useStore((s) => s.pendingStop);
+  const lost = useStore((s) => s.lostWhileMoving);
+  return conn === 'connected' || conn === 'connecting' || pending || !!lost;
+}
+
 export function StopButton() {
   const mount = useStore((s) => s.mount);
   const pending = useStore((s) => s.pendingStop);
-  const lost = useStore((s) => s.lostWhileMoving);
   const stopAll = useStore((s) => s.stopAll);
-  const visible = mount?.connection === 'connected' || mount?.connection === 'connecting' || pending || !!lost;
+  const visible = useStopVisible();
   if (!visible) return null;
   const moving = !!mount && (mount.slew !== 'idle' || mount.tracking);
   return (

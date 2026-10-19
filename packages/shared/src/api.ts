@@ -49,6 +49,25 @@ export interface AlignmentState {
   rmsArcmin: number | null;
   /** Which params were solved, e.g. ['IA','IE'] for 1 star. */
   solved: (keyof PointingModelParams)[];
+  /** How Home was set (absent from older servers; null before Home). */
+  home?: AlignmentHome | null;
+}
+
+export type HomeSource = 'manual' | 'sensors';
+
+/** The Home reference: where the tube pointed (sky az/alt) when Home was pressed, and how that was known. */
+export interface AlignmentHome {
+  /** 'manual' = the user levelled the tube and pointed it north; 'sensors' = measured by a phone on the tube. */
+  source: HomeSource;
+  azDeg: number;
+  altDeg: number;
+  /** 1-sigma uncertainty (deg), when known (sensors). */
+  azSigmaDeg?: number;
+  altSigmaDeg?: number;
+  /** Sensors only: the raw magnetic heading and the WMM declination added to it. */
+  magHeadingDeg?: number;
+  declinationDeg?: number;
+  time: number;
 }
 
 export interface MountState {
@@ -72,6 +91,35 @@ export interface MountState {
   health?: MountHealth;
   /** Safety limits from the server config, so the GUI can explain refusals before they happen. */
   limits?: MountLimits;
+  /** GUI clients (WebSocket connections) on this server right now, including the receiver. Absent from older servers. */
+  clients?: number;
+  /** How other devices can reach this server (for the phone remote). Absent from older servers and the mock. */
+  network?: ServerNetwork;
+}
+
+export interface ServerNetwork {
+  /** Address the HTTP server listens on, e.g. '127.0.0.1' (this computer only) or '0.0.0.0' (all interfaces). */
+  bind: string;
+  port: number;
+  /** http(s)://<LAN IPv4>:<port>/ URLs for other devices; empty when bound to loopback. */
+  lanUrls: string[];
+  /** Served over HTTPS/WSS with a local self-signed certificate (`npm run start:lan:https`). Absent = false. */
+  https?: boolean;
+  /** SHA-256 fingerprint of the server certificate (HTTPS only), so the user can check the browser warning. */
+  certFingerprint?: string;
+  /** Path of the local CA certificate a phone may install to skip the warning (HTTPS only), e.g. '/stargazer-ca.crt'. */
+  caCertPath?: string;
+}
+
+/** An entry in the shared observing list (persisted on the server, broadcast to every client). */
+export interface ObservingListEntry {
+  id: string;
+  name: string;
+  target: Target;
+  addedAt: number;
+  /** When it was marked observed; null if not yet. */
+  observedAt: number | null;
+  note?: string;
 }
 
 export interface MountLimits {
@@ -122,6 +170,8 @@ export type ClientMessage =
    * Press-and-hold manual move. rate 1..9. Stops tracking for that axis while moving.
    * Dead-man: while held, re-send the same message every ~200 ms as a heartbeat; the server stops the axis
    * if no heartbeat arrives within 600 ms (and on WS close). Send stopAxis (or rate 0) on release.
+   * Several clients: the latest client to send `move` for an axis owns it. A client's stopAxis, dead-man and
+   * disconnect only stop the axes it owns; `stop` from any client stops everything.
    */
   | { type: 'move'; axis: Axis; direction: 1 | -1; rate: number }
   | { type: 'stopAxis'; axis: Axis }
@@ -129,14 +179,35 @@ export type ClientMessage =
   | { type: 'goto'; target: Target; force?: boolean } // force overrides sun-safety and alt-limit warnings where allowed
   | { type: 'setTracking'; enabled: boolean }
   | { type: 'setLocation'; location: GeoLocation }
-  /** User has physically pointed the tube level & north: gives initial IA/IE guess (quality 'rough'). */
-  | { type: 'alignHome'; azDeg?: number; altDeg?: number } // defaults 0 (north), 0 (level)
+  /**
+   * Home: the tube points at sky (azDeg, altDeg) right now, which gives the initial IA/IE guess (quality 'rough').
+   * Manual Home: the user levelled the tube and pointed it north (defaults 0, 0). Sensor Home: a phone on the tube
+   * measured az/alt (`source: 'sensors'`, with 1-sigma `uncertainty`; az is true, i.e. declination-corrected).
+   * Safety is the same for both (quality 'rough'). `source` defaults to 'manual'.
+   */
+  | {
+      type: 'alignHome';
+      azDeg?: number;
+      altDeg?: number;
+      source?: HomeSource;
+      uncertainty?: { azSigmaDeg: number; altSigmaDeg: number };
+      /** Sensors only (for display): magnetic heading and the declination that was added to it. */
+      magHeadingDeg?: number;
+      declinationDeg?: number;
+    }
   /** User centred `target` in the eyepiece: record current encoder position as an alignment point and refit. */
   | { type: 'alignAddPoint'; target: Target }
   | { type: 'alignRemovePoint'; id: number }
   | { type: 'alignClear' }
   /** Quick sync: adjust IA/IE only so that current position == target. */
-  | { type: 'sync'; target: Target };
+  | { type: 'sync'; target: Target }
+  // Observing list (shared by all clients; the server replies to everyone with `list`).
+  | { type: 'listAdd'; target: Target; note?: string }
+  | { type: 'listRemove'; id: string }
+  /** Move an entry to position `index` (0-based, clamped). */
+  | { type: 'listMove'; id: string; index: number }
+  /** Mark observed (default) or not; `note` replaces the entry's note when given ('' clears it). */
+  | { type: 'listMarkObserved'; id: string; observed?: boolean; note?: string };
 
 // ---------- server -> client ----------
 export type ServerMessage =
@@ -144,7 +215,9 @@ export type ServerMessage =
   | { type: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; message: string; time: number }
   | { type: 'error'; message: string; requestType?: ClientMessage['type'] }
   /** Server refused a goto that needs confirmation (sun proximity, below horizon). Resend with force:true. */
-  | { type: 'confirm'; message: string; request: ClientMessage };
+  | { type: 'confirm'; message: string; request: ClientMessage }
+  /** The whole observing list: sent on WS connect and to every client after each change. Older servers never send it. */
+  | { type: 'list'; entries: ObservingListEntry[] };
 
 export const DEFAULT_TELESCOPE_HOST = '1.2.3.4';
 export const DEFAULT_TELESCOPE_PORT = 2000;

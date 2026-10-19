@@ -2,59 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useStore } from '../state/store.ts';
 import { SkyRenderer } from './SkyRenderer.ts';
 import { worldToAltAz } from './projection.ts';
-import type { SkyObject } from '../lib/catalog.ts';
-
-let active: SkyRenderer | null = null;
-
-/** Centre the view on an object (and optionally zoom), select it, stop following the telescope. */
-export function centerOn(o: SkyObject, opts: { fov?: number; select?: boolean } = {}) {
-  const st = useStore.getState();
-  let aa: { az: number; alt: number } | null = null;
-  const fc = active?.frame;
-  if (o.kind === 'body' && o.body && fc) {
-    const b = fc.bodies.find((x) => x.body === o.body);
-    if (b) aa = b.altAz;
-  }
-  if (!aa && active) aa = active.altAzOf(o.ra, o.dec);
-  if (aa) {
-    let fov = opts.fov;
-    if (fov === undefined) {
-      const size = o.sizeArcmin?.[0] ? o.sizeArcmin[0] / 60 : 0;
-      fov = o.kind === 'constellation' ? 50 : size ? Math.min(st.view.fov, Math.max(1.5, size * 4)) : Math.min(st.view.fov, o.kind === 'body' ? 10 : 30);
-    }
-    st.setFollow(false);
-    animateView(aa.az, Math.max(-20, aa.alt), fov);
-  }
-  if (opts.select !== false && o.kind !== 'constellation') st.select(o);
-}
-
-export function centerOnAltAz(az: number, alt: number, fov?: number) {
-  useStore.getState().setFollow(false);
-  animateView(az, alt, fov ?? useStore.getState().view.fov);
-}
-
-let anim = 0;
-function animateView(az: number, alt: number, fov: number) {
-  const st = useStore.getState();
-  const from = { ...st.view };
-  let dAz = ((az - from.az + 540) % 360) - 180;
-  const t0 = performance.now(), dur = 650;
-  cancelAnimationFrame(anim);
-  const step = () => {
-    const k = Math.min(1, (performance.now() - t0) / dur);
-    const e = 1 - Math.pow(1 - k, 3);
-    useStore.getState().setView({
-      az: from.az + dAz * e, alt: from.alt + (alt - from.alt) * e,
-      fov: Math.exp(Math.log(from.fov) + (Math.log(fov) - Math.log(from.fov)) * e),
-    });
-    if (k < 1) anim = requestAnimationFrame(step);
-  };
-  dAz = Number.isFinite(dAz) ? dAz : 0;
-  step();
-}
-
-export function rendererFps(): number { return active?.fps ?? 0; }
-export function rendererCpuMs(): number { return active?.cpuMs ?? 0; }
+import { cancelViewAnimation, centerOnAltAz, setActiveSky } from './viewControl.ts';
 
 export function SkyView() {
   const ref = useRef<HTMLDivElement>(null);
@@ -71,7 +19,7 @@ export function SkyView() {
       console.error(e);
       return;
     }
-    rendererRef.current = r; active = r;
+    rendererRef.current = r; setActiveSky(r);
     const cat = useStore.getState().catalog;
     if (cat) r.setCatalog(cat);
 
@@ -86,7 +34,7 @@ export function SkyView() {
       pointers.set(e.pointerId, local(e));
       if (pointers.size === 1) { const p = local(e); downAt = { ...p, t: performance.now() }; moved = false; }
       if (pointers.size === 2) { const [a, b] = [...pointers.values()]; pinchDist = Math.hypot(a.x - b.x, a.y - b.y); moved = true; }
-      cancelAnimationFrame(anim);
+      cancelViewAnimation();
     };
     const onMove = (e: PointerEvent) => {
       const prev = pointers.get(e.pointerId);
@@ -134,7 +82,7 @@ export function SkyView() {
         const dAz = ((before.az - st.view.az + 540) % 360) - 180;
         st.setView({ fov: newFov, az: st.view.az + dAz * t, alt: st.view.alt + (before.alt - st.view.alt) * t });
       } else st.setView({ fov: newFov });
-      cancelAnimationFrame(anim);
+      cancelViewAnimation();
     };
     const onDbl = (e: MouseEvent) => {
       const fc = r.frame; if (!fc) return;
@@ -156,7 +104,7 @@ export function SkyView() {
       el.removeEventListener('wheel', onWheel);
       el.removeEventListener('dblclick', onDbl);
       r.dispose();
-      if (active === r) active = null;
+      setActiveSky(null);
       rendererRef.current = null;
     };
   }, []);

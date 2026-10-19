@@ -1,6 +1,8 @@
 // Global app state (zustand): server link + MountState mirror, logs, confirmations, catalog, sky view & UI.
 import { create } from 'zustand';
-import { STOP_FAILED_MESSAGE, type ClientMessage, type GeoLocation, type MountState, type ServerMessage } from '@stargazer/shared/api.ts';
+import { STOP_FAILED_MESSAGE, type ClientMessage, type GeoLocation, type MountState, type ObservingListEntry, type ServerMessage } from '@stargazer/shared/api.ts';
+import { findListEntry } from '@stargazer/shared/observingList.ts';
+import { detectLayout, stripLayoutParams, writeStoredLayout, type Layout } from '../lib/layout.ts';
 import { createMockTransport, createWsTransport, wsUrl, type LinkStatus, type Transport } from './transport.ts';
 import type { Catalog, SkyObject } from '../lib/catalog.ts';
 import { buildSearchIndex, type SearchIndex } from '../lib/search.ts';
@@ -16,7 +18,9 @@ export interface Layers {
   constellations: boolean; constellationNames: boolean; milkyWay: boolean; dsos: boolean; planets: boolean;
   starNames: boolean; altAzGrid: boolean; eqGrid: boolean; ground: boolean;
 }
-export type PanelTab = 'status' | 'tonight' | 'align' | 'location';
+export type PanelTab = 'status' | 'tonight' | 'list' | 'align' | 'location';
+export type RemoteTab = 'control' | 'search' | 'tonight' | 'list' | 'align' | 'settings';
+export const REMOTE_TABS: RemoteTab[] = ['control', 'search', 'tonight', 'list', 'align', 'settings'];
 
 export interface View { az: number; alt: number; fov: number }
 
@@ -71,6 +75,11 @@ export interface AppState {
   keepClearAck: boolean;
   /** "Centred" was pressed: the server waits for the mount to settle, then records the point. */
   pendingCapture: { name: string; points: number; since: number; settleMs: number } | null;
+  /** Shared observing list from the server (null until received: older servers don't have one). */
+  observingList: ObservingListEntry[] | null;
+  // layout
+  layout: Layout;
+  remoteTab: RemoteTab;
 
   start(mock: boolean): void;
   send(m: ClientMessage): boolean;
@@ -92,7 +101,13 @@ export interface AppState {
   requestGoto(t: Target, opts?: { daytime?: boolean }): void;
   confirmGoto(yes: boolean, dontAskAgain?: boolean): void;
   alignCentred(t: Target): void;
+  /** Add to the shared observing list (no-op with a toast if it's already there). */
+  addToList(t: Target): void;
+  setLayout(l: Layout): void;
+  setRemoteTab(t: RemoteTab): void;
 }
+
+const PANEL_TO_REMOTE: Record<PanelTab, RemoteTab> = { status: 'control', tonight: 'tonight', list: 'list', align: 'align', location: 'settings' };
 
 let logId = 1;
 const MAX_LOGS = 600;
@@ -135,6 +150,9 @@ export const useStore = create<AppState>((set, get) => ({
   pendingGoto: null,
   keepClearAck: false,
   pendingCapture: null,
+  observingList: null,
+  layout: typeof window === 'undefined' ? 'desktop' : detectLayout(),
+  remoteTab: 'control',
 
   start(mock) {
     if (get().transport) return;
@@ -207,7 +225,11 @@ export const useStore = create<AppState>((set, get) => ({
   setFollow(f) { set({ follow: f }); },
   select(o) { set({ selected: o }); },
   setNight(n) { set({ night: n }); lsSet('stargazer.night', n); },
-  setPanel(p) { set({ panel: p }); try { if (p) localStorage.setItem('stargazer.panel', p); } catch { /* ignore */ } },
+  setPanel(p) {
+    // on the phone remote, desktop panel links (e.g. "Set location", "Finish") open the matching tab
+    if (get().layout === 'remote' && p) { set({ remoteTab: PANEL_TO_REMOTE[p] }); return; }
+    set({ panel: p }); try { if (p) localStorage.setItem('stargazer.panel', p); } catch { /* ignore */ }
+  },
   setLocation(l, sendToServer = true) {
     set({ localLocation: l, locationBootstrapped: true });
     if (sendToServer) get().send({ type: 'setLocation', location: l });
@@ -231,6 +253,19 @@ export const useStore = create<AppState>((set, get) => ({
     set({ pendingGoto: null, ...(dontAskAgain ? { keepClearAck: true } : {}) });
     if (yes && t) get().send({ type: 'goto', target: t });
   },
+  addToList(t) {
+    const list = get().observingList;
+    if (list === null) { get().toast('warn', 'This server has no observing list (update Stargazer on the laptop)'); return; }
+    const dup = findListEntry(list, t);
+    if (dup) { get().toast('info', `${dup.name} is already on your list`); return; }
+    if (get().send({ type: 'listAdd', target: t })) get().toast('info', `${t.name} added to your list`);
+  },
+  setLayout(l) {
+    writeStoredLayout(l);
+    try { window.history.replaceState(null, '', stripLayoutParams(window.location.href)); } catch { /* ignore */ }
+    set({ layout: l });
+  },
+  setRemoteTab(t) { set({ remoteTab: t }); },
   alignCentred(t) {
     const m = get().mount;
     if (!m || get().pendingCapture) return;
@@ -285,6 +320,9 @@ function handleServerMessage(m: ServerMessage) {
       break;
     case 'confirm':
       useStore.setState((s) => ({ confirms: [...s.confirms, { id: logId++, message: m.message, request: m.request }] }));
+      break;
+    case 'list':
+      if (Array.isArray(m.entries)) useStore.setState({ observingList: m.entries });
       break;
   }
 }

@@ -398,14 +398,14 @@ async function main() {
     const idx = await page.$$eval('.tonight-item', (items) =>
       items.findIndex((li) => {
         const m = /now (\d+)°/.exec(li.querySelector('.ti-meta')?.textContent ?? '');
-        const btn = li.querySelector('button');
+        const btn = li.querySelector<HTMLButtonElement>('button.ti-goto');
         return !!m && Number(m[1]) >= 25 && Number(m[1]) <= 60 && !!btn && !btn.disabled;
       }),
     );
     if (idx < 0) throw new Error('no Tonight object with an enabled GoTo between 25° and 60°');
     const items = await page.$$('.tonight-item');
     const tonightName = await items[idx]!.$eval('.ti-name', (e) => e.textContent ?? '');
-    await (await items[idx]!.$('button'))!.click();
+    await (await items[idx]!.$('button.ti-goto'))!.click();
     await confirmSlew(page);
     const tonightTarget = (await waitGoto(obs, test.name)).target!;
     await sleep(1500);

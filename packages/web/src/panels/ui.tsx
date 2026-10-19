@@ -57,6 +57,16 @@ export function Icon({ name, size = 16 }: { name: string; size?: number }) {
     check: <path d="M3 8.5l3 3 7-7" />,
     trash: <><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 9h5.6l.7-9" /></>,
     plus: <path d="M8 3v10M3 8h10" />,
+    phone: <><rect x="4.5" y="1.5" width="7" height="13" rx="1.5" /><path d="M7 12.5h2" /></>,
+    monitor: <><rect x="1.5" y="2.5" width="13" height="8.5" rx="1.2" /><path d="M6 14h4M8 11v3" /></>,
+    gear: <><circle cx="8" cy="8" r="2.2" /><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" /></>,
+    bookmark: <path d="M4 1.8h8v12.4l-4-3-4 3z" />,
+    bookmarkAdd: <><path d="M4 1.8h8v12.4l-4-3-4 3z" /><path d="M8 4.5v4M6 6.5h4" /></>,
+    bookmarkOn: <path d="M4 1.8h8v12.4l-4-3-4 3z" fill="currentColor" />,
+    arrowUp: <path d="M8 13V3M4 7l4-4 4 4" />,
+    arrowDown: <path d="M8 3v10M4 9l4 4 4-4" />,
+    edit: <><path d="M10.5 2.5l3 3L6 13H3v-3z" /><path d="M9 4l3 3" /></>,
+    devices: <><rect x="1.5" y="3" width="9" height="7" rx="1" /><path d="M4 12.5h4" /><rect x="11" y="5.5" width="3.5" height="7" rx=".8" /></>,
     sun: <><circle cx="8" cy="8" r="3" /><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.4 1.4M11.6 11.6L13 13M3 13l1.4-1.4M11.6 4.4L13 3" /></>,
   };
   return (

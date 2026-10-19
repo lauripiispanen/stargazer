@@ -4,17 +4,27 @@
 // Encoder angles here are "logical" degrees (az increasing N→E, alt increasing up); config.azDirection /
 // altDirection map them to raw AUX values. Azimuth is additionally tracked UNWRAPPED from cable-neutral.
 import { EventEmitter } from 'node:events';
-import { type Axis, type GeoLocation, type MountHealth, type MountLimits, type MountState, type SlewState, STOP_FAILED_MESSAGE, type Target } from '@stargazer/shared/api.ts';
+import { type Axis, type GeoLocation, type HomeSource, type MountHealth, type MountLimits, type MountState, type ObservingListEntry, type SlewState, STOP_FAILED_MESSAGE, type Target } from '@stargazer/shared/api.ts';
 import type { AltAz } from '@stargazer/shared/astro.ts';
+import { applyListMessage, type ListMessage, sanitizeList } from '@stargazer/shared/observingList.ts';
 import { AuxCmd, AuxDevice, decodePosition, deviceName, encodeGuideRate, encodePosition, formatVersion } from '@stargazer/shared/aux.ts';
 import { BAT_GET_STATUS, BATTERY_DEVICE, DISCOVERY_DEVICES } from './allowList.ts';
 import { Alignment } from './alignment.ts';
+import { expectedFirstStarErrorDeg, MAX_SENSOR_ALT_DEG } from '@stargazer/shared/sensors.ts';
 import { type AstroApi, clamp, defaultAstro, mod360, sepAltAz, wrap180 } from './astroApi.ts';
 import { AuxClient, AuxDisconnectedError, type AuxLink, type RequestOptions } from './auxClient.ts';
 import type { ServerConfig } from './config.ts';
 import { PacketLog } from './packetLog.ts';
 import { candidatePlans, type Kinematics, moveDuration, type Pose, simulate, splitLegs, type Step } from './pathPlanner.ts';
 import type { StateStore } from './persist.ts';
+
+/** Extra alignHome fields (api.ts `alignHome`). */
+export interface AlignHomeOptions {
+  source?: HomeSource;
+  uncertainty?: { azSigmaDeg: number; altSigmaDeg: number };
+  magHeadingDeg?: number;
+  declinationDeg?: number;
+}
 
 export interface Clock {
   now(): number;
@@ -60,6 +70,8 @@ interface AxisCtl {
   stallSince: number | null;
   /** A watchdog stop is in flight. */
   halting: boolean;
+  /** Client that started/last refreshed this manual move (the latest mover owns the axis); null = unknown/internal. */
+  owner: string | null;
 }
 
 interface Leg {
@@ -95,6 +107,7 @@ const newAxis = (): AxisCtl => ({
   lastChange: 0,
   stallSince: null,
   halting: false,
+  owner: null,
 });
 
 function versionLess(a: string, b: string): boolean {
@@ -159,6 +172,8 @@ export class Mount extends EventEmitter {
   private lastSnapshotSave = 0;
   private snapshot: { encoder: Enc; time: number; unwrappedAz: number | null } | null = null;
   private warnedForeign = new Set<number>();
+  private observingList: ObservingListEntry[] = [];
+  private listSeq = 0;
 
   constructor(deps: MountDeps) {
     super();
@@ -287,6 +302,22 @@ export class Mount extends EventEmitter {
     return { az: mod360(p.az + this.axes.az.rateDegPerSec * dt), alt: p.alt + this.axes.alt.rateDegPerSec * dt };
   }
 
+  // ---------- observing list ----------
+
+  getObservingList(): ObservingListEntry[] {
+    return this.observingList;
+  }
+
+  /** Apply an observing-list command, persist, and emit 'list'. Throws a user-facing Error when refused. */
+  listCommand(m: ListMessage): void {
+    this.observingList = applyListMessage(this.observingList, m, {
+      now: this.clock.now(),
+      newId: () => `${this.clock.now().toString(36)}-${(++this.listSeq).toString(36)}`,
+    });
+    this.persist();
+    this.emit('list', this.observingList);
+  }
+
   // ---------- persistence ----------
 
   private loadPersisted(): void {
@@ -294,6 +325,7 @@ export class Mount extends EventEmitter {
     if (!s) return;
     this.location = s.location;
     this.alignment.restore(s.alignment);
+    this.observingList = sanitizeList(s.observingList);
     if (s.encoder && s.encoderTime) this.snapshot = { encoder: s.encoder, time: s.encoderTime, unwrappedAz: s.unwrappedAz ?? null };
   }
 
@@ -310,6 +342,7 @@ export class Mount extends EventEmitter {
           encoder: this.snapshot?.encoder ?? null,
           encoderTime: this.snapshot?.time ?? null,
           unwrappedAz: this.snapshot?.unwrappedAz ?? null,
+          observingList: this.observingList,
         },
         now,
       );
@@ -899,16 +932,24 @@ export class Mount extends EventEmitter {
 
   // ---------- manual motion ----------
 
-  /** Press-and-hold move; repeat the same call every ~200 ms as a heartbeat (dead-man). */
-  async move(axis: Axis, direction: 1 | -1, rate: number): Promise<void> {
-    if (!(rate >= 1)) return this.stopAxis(axis);
+  /**
+   * Press-and-hold move; repeat the same call every ~200 ms as a heartbeat (dead-man). `owner` identifies the
+   * client: the latest mover owns the axis, and only the owner's release/disconnect stops it.
+   */
+  async move(axis: Axis, direction: 1 | -1, rate: number, owner?: string): Promise<void> {
+    if (!(rate >= 1)) return this.stopAxis(axis, owner);
     this.requireMotionAllowed();
     const ax = this.axes[axis];
-    if (ax.expired) throw new Error('Manual move timed out: release and press again');
+    if (ax.expired && (owner === undefined || ax.owner === null || ax.owner === owner)) throw new Error('Manual move timed out: release and press again');
+    if (ax.expired) ax.expired = false; // another client starts afresh
     let r = Math.min(9, Math.round(rate));
     if (this.alignment.state.quality === 'none' && r > this.config.unknownMaxRate) r = this.config.unknownMaxRate;
     const now = this.clock.now();
     ax.lastHeartbeat = now;
+    if (ax.moving && ax.owner !== (owner ?? null)) {
+      if (ax.owner !== null) this.log('info', `Manual ${axis} move taken over by another client`);
+      ax.owner = owner ?? null;
+    }
     if (ax.moving && ax.dir === direction && ax.rate === r) return; // heartbeat only
 
     // Refuse to start into a limit.
@@ -925,6 +966,7 @@ export class Mount extends EventEmitter {
       ax.moveStart = now;
     }
     ax.moving = true;
+    ax.owner = owner ?? null;
     ax.dir = direction;
     ax.rate = r;
     ax.lastChange = this.clock.now();
@@ -943,8 +985,13 @@ export class Mount extends EventEmitter {
     while (wasFast && Date.now() < end && Math.abs(this.speed(axis, 300) ?? 0) > 0.05) await sleep(100);
   }
 
-  async stopAxis(axis: Axis): Promise<void> {
+  /**
+   * Release a manual move. With `owner`, only stops the axis if that client owns it (another client took it over
+   * since); without, always stops (internal watchdogs).
+   */
+  async stopAxis(axis: Axis, owner?: string): Promise<void> {
     const ax = this.axes[axis];
+    if (owner !== undefined && ax.owner !== null && ax.owner !== owner && (ax.moving || ax.expired)) return;
     ax.expired = false;
     if (!this.link) return;
     const wasMoving = ax.moving;
@@ -962,9 +1009,19 @@ export class Mount extends EventEmitter {
     this.changed();
   }
 
-  /** Stop all manual motion (e.g. the controlling WS client went away). */
-  async stopManual(): Promise<void> {
-    for (const a of AXES) if (this.axes[a].moving) await this.stopAxis(a);
+  /** Stop manual motion: all of it, or (with `owner`) only the axes that client owns, e.g. when it disconnects. */
+  async stopManual(owner?: string): Promise<void> {
+    for (const a of AXES) {
+      const ax = this.axes[a];
+      if (owner !== undefined && ax.owner !== owner) continue;
+      if (ax.moving) await this.stopAxis(a);
+      else if (owner !== undefined && ax.expired) ax.expired = false;
+    }
+  }
+
+  /** Which client owns each axis' manual move (null if idle or internal). For tests and diagnostics. */
+  manualOwners(): Record<Axis, string | null> {
+    return { az: this.axes.az.moving ? this.axes.az.owner : null, alt: this.axes.alt.moving ? this.axes.alt.owner : null };
   }
 
   /** Abort everything (goto, manual, tracking), verify, escalate. Also acknowledges a latched fault. */
@@ -1129,6 +1186,10 @@ export class Mount extends EventEmitter {
     this.slew = 'goto-fast';
     this.changed();
     this.log('info', `GoTo ${target.name} (route: ${route.name}, ${route.steps.length} leg${route.steps.length > 1 ? 's' : ''})`);
+    const home = this.alignment.state.home;
+    if (this.alignment.state.quality === 'rough' && home?.source === 'sensors') {
+      this.log('info', `Home came from the phone compass (±${home.azSigmaDeg?.toFixed(0) ?? '?'}° az): expect ${target.name} within ~${expectedFirstStarErrorDeg(home) ?? 10}°. Find it in the finder, centre it, then press Centred.`);
+    }
 
     try {
       // No guide rate may be sent from here until both axes report SLEW_DONE (MC 7.13 runaway bug).
@@ -1361,9 +1422,34 @@ export class Mount extends EventEmitter {
     if (wait > 0) await sleep(wait);
   }
 
-  alignHome(azDeg = 0, altDeg = 0): void {
-    this.alignment.setHome(this.requirePosition(), azDeg, altDeg);
-    this.log('info', `Home set: encoder now means az ${azDeg}°, alt ${altDeg}° (rough alignment)`);
+  /**
+   * Home: the tube points at sky (azDeg, altDeg) now. Manual = level & north (0, 0); sensors = measured by a phone
+   * on the tube (true az, with 1-sigma uncertainty). Both give quality 'rough': the same pre-alignment Sun rules.
+   */
+  alignHome(azDeg = 0, altDeg = 0, opts: AlignHomeOptions = {}): void {
+    const source = opts.source ?? 'manual';
+    if (!Number.isFinite(azDeg) || !Number.isFinite(altDeg)) throw new Error('Home: az/alt must be numbers');
+    if (source === 'sensors' && Math.abs(altDeg) > MAX_SENSOR_ALT_DEG) {
+      throw new Error(`Home from sensors refused: tube altitude ${altDeg.toFixed(1)}° (the compass is unreliable above ${MAX_SENSOR_ALT_DEG}°). Lower the tube and capture again.`);
+    }
+    if (Math.abs(altDeg) > 85) throw new Error(`Home refused: altitude ${altDeg.toFixed(1)}° is not plausible`);
+    const az = azDeg >= 0 && azDeg < 360 ? azDeg : mod360(azDeg);
+    const u = opts.uncertainty;
+    this.alignment.setHome(this.requirePosition(), {
+      source,
+      azDeg: az,
+      altDeg,
+      ...(u ? { azSigmaDeg: u.azSigmaDeg, altSigmaDeg: u.altSigmaDeg } : {}),
+      ...(opts.magHeadingDeg != null ? { magHeadingDeg: opts.magHeadingDeg } : {}),
+      ...(opts.declinationDeg != null ? { declinationDeg: opts.declinationDeg } : {}),
+      time: this.clock.now(),
+    });
+    const sig = u ? ` (±${u.azSigmaDeg.toFixed(1)}° az, ±${u.altSigmaDeg.toFixed(1)}° alt)` : '';
+    this.log('info', `Home set from ${source === 'sensors' ? 'phone sensors' : 'level & north'}: encoder now means az ${az.toFixed(2)}°, alt ${altDeg.toFixed(2)}°${sig} (rough alignment)`);
+    if (source === 'sensors') {
+      const exp = expectedFirstStarErrorDeg(this.alignment.state.home);
+      this.log('info', `The phone compass is only good to a few degrees: expect the first star within ~${exp ?? 10}°. Use the finder, then add stars to refine.`);
+    }
     this.afterModelChange(null);
   }
 

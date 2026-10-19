@@ -4,8 +4,9 @@ import { bodyRaDec, doubleStarNote, objectToTarget, raDecToAltAz, riseTransitSet
 import { objectTitle } from '../lib/catalog.ts';
 import { compassPoint, fmtDeg, fmtDms, fmtMag, fmtRa, fmtSize, fmtTime } from '../lib/format.ts';
 import { sunIsUp } from '../lib/safety.ts';
-import { centerOn } from '../sky/SkyView.tsx';
+import { centerOn } from '../sky/viewControl.ts';
 import { KV, Icon } from './ui.tsx';
+import { AddToListButton } from './ListPanel.tsx';
 
 export function InfoCard() {
   const o = useStore((s) => s.selected);
@@ -56,6 +57,7 @@ export function InfoCard() {
           <button className="btn primary" disabled={!!block} onClick={goto}><Icon name="target" /> GoTo</button>
         </span>
         <button className="btn" onClick={() => centerOn(o, { select: false })}><Icon name="crosshair" /> Centre</button>
+        {o.kind !== 'constellation' && <AddToListButton target={objectToTarget({ ...o, ra, dec })} />}
         {o.kind === 'star' && <button className="btn" onClick={useForAlign} title="Use this star in the alignment wizard"><Icon name="star" /> Use as alignment star</button>}
       </div>
       {block && <div className="dim small block-reason">{block}</div>}

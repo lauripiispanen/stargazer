@@ -1,5 +1,5 @@
 // Alignment session: alignment points, home guess, sync, and model refits via pointing.fitModel.
-import type { AlignmentPoint, AlignmentState, GeoLocation, PointingModelParams, Target } from '@stargazer/shared/api.ts';
+import type { AlignmentHome, AlignmentPoint, AlignmentState, GeoLocation, PointingModelParams, Target } from '@stargazer/shared/api.ts';
 import { ZERO_PARAMS } from '@stargazer/shared/pointing.ts';
 import type { AstroApi } from './astroApi.ts';
 
@@ -13,7 +13,12 @@ export interface AlignmentSnapshot {
   rmsArcmin: number | null;
   solved: (keyof PointingModelParams)[];
   nextId: number;
+  /** How Home was set (absent in files written before sensor Home existed). */
+  homeInfo?: AlignmentHome | null;
 }
+
+/** Home details other than the encoder reading (az/alt default to 0/0 = level and north). */
+export type HomeOptions = Partial<Omit<AlignmentHome, 'time'>> & { time?: number };
 
 export class Alignment {
   private points: AlignmentPoint[] = [];
@@ -23,6 +28,7 @@ export class Alignment {
   private rmsArcmin: number | null = null;
   private solved: (keyof PointingModelParams)[] = [];
   private nextId = 1;
+  private homeInfo: AlignmentHome | null = null;
   /** Warnings from the last fit (poor geometry, dropped params, ...). */
   fitWarnings: string[] = [];
 
@@ -35,6 +41,7 @@ export class Alignment {
       params: this.params ? { ...this.params } : null,
       rmsArcmin: this.rmsArcmin,
       solved: [...this.solved],
+      home: this.homeInfo ? { ...this.homeInfo } : null,
     };
   }
 
@@ -42,9 +49,12 @@ export class Alignment {
     return this.params;
   }
 
-  /** The tube is level and pointing at (az, alt): rough IA/IE so the current encoder maps there. Starts a new alignment. */
-  setHome(enc: Encoder, az = 0, alt = 0): void {
+  /** The tube points at sky (az, alt) (default level & north): rough IA/IE so the current encoder maps there. Starts a new alignment. */
+  setHome(enc: Encoder, opts: HomeOptions = {}): void {
+    const az = opts.azDeg ?? 0;
+    const alt = opts.altDeg ?? 0;
     this.home = this.astro.offsetsFromPoint({ az, alt }, enc, ZERO_PARAMS);
+    this.homeInfo = { ...opts, source: opts.source ?? 'manual', azDeg: az, altDeg: alt, time: opts.time ?? Date.now() };
     this.fitWarnings = [];
     this.points = [];
     this.params = { ...this.home };
@@ -76,6 +86,7 @@ export class Alignment {
     this.points = [];
     this.params = null;
     this.home = null;
+    this.homeInfo = null;
     this.quality = 'none';
     this.rmsArcmin = null;
     this.solved = [];
@@ -114,7 +125,7 @@ export class Alignment {
   }
 
   snapshot(): AlignmentSnapshot {
-    return { ...this.state, home: this.home, nextId: this.nextId };
+    return { ...this.state, home: this.home, homeInfo: this.homeInfo, nextId: this.nextId };
   }
 
   restore(s: AlignmentSnapshot | null | undefined): void {
@@ -122,6 +133,7 @@ export class Alignment {
     this.points = s.points ?? [];
     this.params = s.params ?? null;
     this.home = s.home ?? null;
+    this.homeInfo = s.homeInfo ?? (s.home ? { source: 'manual', azDeg: 0, altDeg: 0, time: 0 } : null);
     this.quality = s.quality ?? 'none';
     this.rmsArcmin = s.rmsArcmin ?? null;
     this.solved = s.solved ?? [];

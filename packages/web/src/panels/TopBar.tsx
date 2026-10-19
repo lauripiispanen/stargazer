@@ -4,7 +4,7 @@ import { useNow } from '../state/hooks.ts';
 import { search } from '../lib/search.ts';
 import { objectTitle, type SkyObject } from '../lib/catalog.ts';
 import { fmtTime, toLocalInput } from '../lib/format.ts';
-import { centerOn } from '../sky/SkyView.tsx';
+import { centerOn } from '../sky/viewControl.ts';
 import { connTone } from './StatusPanel.tsx';
 import { Icon, Pill } from './ui.tsx';
 
@@ -119,7 +119,9 @@ export function TopBar() {
   const layers = useStore((s) => s.layers);
   const toggle = useStore((s) => s.toggleLayer);
   const fov = useStore((s) => s.view.fov);
+  const setLayout = useStore((s) => s.setLayout);
   const c = link !== 'open' ? 'server offline' : mount?.connection ?? 'disconnected';
+  const devices = link === 'open' && (mount?.clients ?? 0) > 1 ? mount!.clients! : 0;
   const tone = link !== 'open' ? 'bad' : connTone(mount?.connection);
   return (
     <header className="topbar glass">
@@ -131,6 +133,7 @@ export function TopBar() {
       <button className="conn-pill" onClick={() => setPanel(panel === 'status' ? null : 'status')} title="Connection & status">
         <Pill tone={tone}>{c}</Pill>
       </button>
+      {devices > 0 && <span className="devices dim small" title="Browsers connected to this Stargazer server (laptop, phone remote, …)"><Icon name="devices" size={14} /> {devices} devices</span>}
       <SearchBox />
       <TimeControls />
       <div className="tb-right">
@@ -139,6 +142,7 @@ export function TopBar() {
         <button className={`icon-btn ${layers.eqGrid ? 'on' : ''}`} onClick={() => toggle('eqGrid')} title="Equatorial grid">Eq</button>
         <LayersMenu />
         <button className={`icon-btn night-btn ${night ? 'on' : ''}`} onClick={() => setNight(!night)} title="Night mode (red)" aria-pressed={night}><Icon name="eye" /></button>
+        <button className="icon-btn layout-btn" onClick={() => setLayout('remote')} title="Switch to the phone remote layout" aria-label="Phone remote layout"><Icon name="phone" /></button>
       </div>
     </header>
   );
@@ -147,6 +151,7 @@ export function TopBar() {
 export const TABS: { id: PanelTab; label: string; icon: string }[] = [
   { id: 'status', label: 'Status', icon: 'plug' },
   { id: 'tonight', label: 'Tonight', icon: 'star' },
+  { id: 'list', label: 'List', icon: 'bookmark' },
   { id: 'align', label: 'Align', icon: 'crosshair' },
   { id: 'location', label: 'Location', icon: 'pin' },
 ];

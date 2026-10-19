@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { PointingModelParams, Target } from '@stargazer/shared/api.ts';
-import { useStore, useLocation } from '../state/store.ts';
-import { useGotoBlocker, useNow, useSun } from '../state/hooks.ts';
-import { suggestAlignmentStars, raDecToAltAz } from '../lib/astroAdapter.ts';
-import { autoSlewBlocked, mountLimits, sunIsUp } from '../lib/safety.ts';
+import { useCallback, useMemo, useState } from 'react';
+import type { PointingModelParams } from '@stargazer/shared/api.ts';
+import { useStore } from '../state/store.ts';
+import { useAlignWizard } from '../state/alignWizard.ts';
+import { autoSlewBlocked, sunIsUp } from '../lib/safety.ts';
 import { compassPoint, fmtDeg, fmtDuration } from '../lib/format.ts';
 import { fmtLocation } from '../lib/location.ts';
-import type { SkyObject } from '../lib/catalog.ts';
-import { centerOn, centerOnAltAz } from '../sky/SkyView.tsx';
+import { centerOnAltAz } from '../sky/viewControl.ts';
 import { Section, Icon, Pill, KV } from './ui.tsx';
+import { HomeSummary } from './HomeSummary.tsx';
+import { expectedFirstStarErrorDeg } from '@stargazer/shared/sensors.ts';
 
 const QUALITY_TEXT = '1 star: rough (GoTos land within a degree or two) · 2 stars: good (tilt solved) · 3+ stars: best (collimation too, with residuals)';
 
@@ -44,62 +44,14 @@ function Compass({ az }: { az: number | null }) {
 }
 
 export function AlignPanel() {
-  const mount = useStore((s) => s.mount);
-  const link = useStore((s) => s.link);
-  const send = useStore((s) => s.send);
-  const catalog = useStore((s) => s.catalog);
-  const wizardStar = useStore((s) => s.wizardStar);
+  const w = useAlignWizard();
+  const { mount, al, quality, step, setStep, connected, locKnown, limits, loc, now, sun, suggestions, capture, chosen, choose, chooseSuggestion,
+    chosenAlt, slewBlock, firstStar, gotoRunning, centredBlock, slewed, send } = w;
   const selected = useStore((s) => s.selected);
-  const suggestions = useStore((s) => s.alignSuggestions);
-  const requestGoto = useStore((s) => s.requestGoto);
   const skew = useStore((s) => s.clockSkewMs);
-  const capture = useStore((s) => s.pendingCapture);
-  const alignCentred = useStore((s) => s.alignCentred);
-  const blocker = useGotoBlocker();
-  const limits = mountLimits(mount);
   // stable callback ref: scroll the "Settling…" note into view once, when it appears
   const scrollIntoView = useCallback((el: HTMLElement | null) => el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), []);
-  const loc = useLocation();
-  const now = useNow(30000);
-  const sun = useSun();
-  const al = mount?.alignment;
-  const quality = al?.quality ?? 'none';
-  const [step, setStep] = useState(() => (quality === 'none' ? 0 : 2));
   const [homeConfirm, setHomeConfirm] = useState(false);
-  const [slewed, setSlewed] = useState<string | null>(null);
-  const connected = link === 'open' && mount?.connection === 'connected';
-  const locKnown = !!mount?.location;
-
-  useEffect(() => { if (wizardStar) setStep(2); }, [wizardStar]);
-
-  // suggestions (also highlighted on the sky map while this panel is open)
-  const pointsKey = al?.points.map((p) => p.id).join(',') ?? '';
-  useEffect(() => {
-    if (!catalog || step !== 2) { useStore.setState({ alignSuggestions: [] }); return; }
-    try {
-      // stay a few degrees under the upper altitude limit so the GoTo (and tracking afterwards) is allowed
-      const maxAlt = Math.min(75, limits.altDeg[1] - 4);
-      const s = suggestAlignmentStars(loc, Date.now(), al?.points ?? [], { dsos: catalog.dsoRecords, stars: catalog.stars, starNames: catalog.starNames }, { maxAlt });
-      useStore.setState({ alignSuggestions: s });
-    } catch (e) { console.warn('suggestAlignmentStars failed', e); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [catalog, step, pointsKey, loc.lat, loc.lon, limits.altDeg[1], Math.floor(now / 60000)]);
-  useEffect(() => () => useStore.setState({ alignSuggestions: [] }), []);
-
-  const chosen: SkyObject | null = wizardStar;
-  const choose = (o: SkyObject) => { useStore.setState({ wizardStar: o }); setSlewed(null); centerOn(o, { select: true, fov: 40 }); };
-  const chooseSuggestion = (i: number) => {
-    const s = suggestions[i];
-    const named = catalog?.namedStars.find((n) => n.hip && n.hip === s.hip);
-    choose(named ?? { key: `star:${s.hip ?? s.name}`, kind: 'star', name: s.name, id: s.hip ? `HIP ${s.hip}` : undefined, aliases: [], ra: s.ra, dec: s.dec, mag: s.mag, typeLabel: 'Star', hip: s.hip });
-  };
-  const target: Target | null = chosen ? { kind: 'radec', ra: chosen.ra, dec: chosen.dec, name: chosen.name, id: chosen.id } : null;
-  const chosenAlt = chosen ? raDecToAltAz(chosen, loc, now) : null;
-  const slewBlock = target ? blocker(target) : null;
-  const firstStar = (al?.points.length ?? 0) === 0;
-  const gotoRunning = !!mount?.slew.startsWith('goto');
-  const centredBlock = !connected ? 'Telescope not connected' : quality === 'none' ? 'Do “Home” first (step 2)' : !locKnown ? 'Set your location first'
-    : gotoRunning ? 'Wait for the GoTo to finish' : mount?.slew === 'manual' ? 'Release the slew pad first' : capture ? 'Recording…' : null;
 
   const params = al?.params;
   const solved = new Set(al?.solved ?? []);
@@ -136,6 +88,11 @@ export function AlignPanel() {
               <li>Press <b>Home</b>. GoTos are then rough (a few degrees off) until you add stars.</li>
             </ol>
           </div>
+          <div className="note dim small">
+            <b>Or let a phone do it:</b> open the phone remote over HTTPS (<span className="mono">npm run start:lan:https</span>, see Status › Phone remote), lay the
+            phone on the tube and use <b>Align › Sensors</b>. Its compass and gravity sensor measure where the tube points, so it needn't be level or north.
+          </div>
+          {quality !== 'none' && <HomeSummary home={al?.home} />}
           {mount?.encoder && <KV k="Encoders now" mono v={`az ${mount.encoder.az.toFixed(2)}°  alt ${mount.encoder.alt.toFixed(2)}°`} />}
           <button className="btn" onClick={() => centerOnAltAz(0, 15, 60)}><Icon name="compass" /> Show north on the map</button>
           {!homeConfirm ? (
@@ -147,7 +104,7 @@ export function AlignPanel() {
               <div>Set the encoders' reference here? Any existing alignment is replaced.</div>
               <div className="row-actions">
                 <button className="btn" onClick={() => setHomeConfirm(false)}>Cancel</button>
-                <button className="btn primary" disabled={!connected || mount?.slew !== 'idle'} onClick={() => { send({ type: 'alignHome' }); setHomeConfirm(false); setStep(2); }}>Yes, set Home</button>
+                <button className="btn primary" disabled={!connected || mount?.slew !== 'idle'} onClick={() => { w.setHome(); setHomeConfirm(false); }}>Yes, set Home</button>
               </div>
             </div>
           )}
@@ -160,6 +117,7 @@ export function AlignPanel() {
             {quality === 'none' && (
               <div className="note warn">Do “Home” first: GoTo needs to know where level and north are. <button className="btn small" onClick={() => setStep(1)}>Go to Home</button></div>
             )}
+            {quality === 'rough' && <HomeSummary home={al?.home} />}
             <div className="note dim small">Pick a suggested star (highlighted on the map), or click any bright star on the map and choose “Use as alignment star”.</div>
             <ul className="suggest">
               {suggestions.map((s, i) => (
@@ -181,10 +139,14 @@ export function AlignPanel() {
               <KV k="Position now" mono v={chosenAlt ? `${fmtDeg(chosenAlt.alt)} alt · ${fmtDeg(chosenAlt.az)} ${compassPoint(chosenAlt.az)}` : '—'} />
               <ol className="howto">
                 <li>
-                  <b>Slew there.</b> {firstStar ? 'This first GoTo is only approximate (Home is rough): expect it to land a few degrees off. Use the finder to find the star.' : 'With stars already added it should land close.'}
+                  <b>Slew there.</b> {firstStar
+                    ? al?.home?.source === 'sensors'
+                      ? `This first GoTo is only approximate (Home came from the phone compass): expect the star within ~${expectedFirstStarErrorDeg(al.home) ?? 10}°. Use the finder to find it.`
+                      : 'This first GoTo is only approximate (Home is rough): expect it to land a few degrees off. Use the finder to find the star.'
+                    : 'With stars already added it should land close.'}
                   <div className="row-actions">
                     <span className="btn-wrap" title={slewBlock ?? ''}>
-                      <button className="btn" disabled={!!slewBlock || gotoRunning} onClick={() => { if (target) { requestGoto(target, { daytime: sunIsUp(sun.alt, limits) }); setSlewed(chosen.key); } }}><Icon name="target" /> Slew there</button>
+                      <button className="btn" disabled={!!slewBlock || gotoRunning} onClick={() => w.slewTo()}><Icon name="target" /> Slew there</button>
                     </span>
                     {slewed === chosen.key && gotoRunning && <span className="dim small">slewing…</span>}
                     {slewed === chosen.key && !gotoRunning && mount?.target?.name === chosen.name && <span className="txt-ok small">arrived{mount.tracking ? ' · tracking' : ''}</span>}
@@ -197,7 +159,7 @@ export function AlignPanel() {
               <div className="row-actions">
                 <button className="btn" disabled={!!capture} onClick={() => useStore.setState({ wizardStar: null })}>Pick another</button>
                 <span className="btn-wrap" title={centredBlock ?? 'Record this star at the current position'}>
-                  <button className="btn primary" disabled={!!centredBlock} onClick={() => { if (target) { alignCentred(target); setSlewed(null); } }}>
+                  <button className="btn primary" disabled={!!centredBlock} onClick={() => w.centred()}>
                     <Icon name="check" /> Centred
                   </button>
                 </span>
